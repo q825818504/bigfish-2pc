@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 
 namespace LeaguePatchCollection.RiotHelperLib;
 
@@ -22,27 +22,65 @@ public static class ProcessUtil
 
     public static bool TerminateRiotServices()
     {
-        string[] riotProcesses = ["RiotClientServices", "LeagueClient", "Lion-Win64-Shipping"];
+        // 必须杀全：
+        //   RiotClientServices —— 启动器
+        //   Riot Client        —— CEF 主进程（单实例锁持有者，漏了它新实例会立刻退出）
+        //   LeagueClient*      —— LCU 主体与渲染进程
+        //
+        // 性能要求：整个终止阶段硬上限 3 秒。原实现是串行 Kill + WaitForExit(5000)，
+        // 9 个进程名最坏能拖十几秒，直接把“5 秒内启动客户端”的目标吃掉。
+        string[] riotProcesses =
+        [
+            "RiotClientServices",
+            "Riot Client",
+            "RiotClientUx",
+            "RiotClientCrashHandler",
+            "LeagueClient",
+            "LeagueClientUx",
+            "LeagueClientUxRender",
+            "LeagueCrashHandler64",
+            "Lion-Win64-Shipping",
+        ];
 
+        var victims = new List<Process>();
         foreach (var processName in riotProcesses)
         {
-            try
-            {
-                var processes = Process.GetProcessesByName(processName);
-
-                foreach (var process in processes)
-                {
-                    process.Kill();
-                    process.WaitForExit();
-                }
-            }
-            catch (Exception)
-            {
-                Trace.WriteLine($" [WARN] Could not terminate {processName}, user should run app as administrator.");
-                return false;
-            }
+            try { victims.AddRange(Process.GetProcessesByName(processName)); }
+            catch { }
         }
-        return true;
+
+        if (victims.Count == 0)
+        {
+            Trace.WriteLine("[INFO] no Riot processes to terminate");
+            return true;
+        }
+
+        // 一次性全部发 kill，不逐个等待
+        foreach (var p in victims)
+        {
+            try { p.Kill(); }
+            catch (Exception ex) { Trace.WriteLine($" [WARN] kill {p.ProcessName}#{p.Id} failed: {ex.Message}"); }
+        }
+
+        var deadline = Environment.TickCount64 + 3000;
+        while (Environment.TickCount64 < deadline)
+        {
+            bool allGone = true;
+            foreach (var p in victims)
+            {
+                try { if (!p.HasExited) { allGone = false; break; } }
+                catch { }
+            }
+            if (allGone)
+            {
+                Trace.WriteLine($"[INFO] terminated {victims.Count} Riot processes");
+                return true;
+            }
+            Thread.Sleep(80);
+        }
+
+        Trace.WriteLine(" [WARN] terminate timed out after 3s, launching anyway");
+        return false;
     }
 
     public static async Task RemoveVanguard()

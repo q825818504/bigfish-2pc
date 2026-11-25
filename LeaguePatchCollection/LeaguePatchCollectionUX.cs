@@ -143,7 +143,13 @@ namespace LeaguePatchCollection
             // 这里复刻 kill -> 重启 这一段，保持和海克斯一致的启动语义。
             if (!allowMultiple)
             {
-                ProcessUtil.TerminateRiotServices();
+                bool allKilled = ProcessUtil.TerminateRiotServices();
+                try
+                {
+                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") + " terminate-riot: allKilled=" + allKilled + Environment.NewLine);
+                }
+                catch { }
             }
 
             // 关掉产品元数据里的 vanguard 依赖并锁只读。
@@ -167,14 +173,48 @@ namespace LeaguePatchCollection
                 Trace.WriteLine("[WARN] vanguard dependency patch failed: " + ex.Message);
             }
 
+            // 只对“本程序启动的这一次会话”启用 Vanguard 绕过：
+            //   1) 把内嵌的 vghook.dll 部署成 <Riot Client>\version.dll
+            //      （RiotClientServices.exe 静态导入 VERSION.dll，会在读配置之前加载它）
+            //   2) 起后台线程，等 LeagueClient.exe 出现后给它打两处 jns->jmp
+            // 关掉客户端（CloseClientsButton_Click）时会撤除，回到原生行为。
+            try
+            {
+                string depBypass = VanguardBypass.Deploy();
+                string depPatcher = VanguardBypass.StartLcuPatcher();
+                Trace.WriteLine("[INFO] vanguard bypass: " + depBypass + " | " + depPatcher);
+                try
+                {
+                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") + " vanguard-bypass: " + depBypass + " | " + depPatcher + Environment.NewLine);
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine("[WARN] vanguard bypass failed: " + ex.Message);
+            }
+
             StartButton.Enabled = false;
             string originalText = StartButton.Text;
             StartButton.Text = "LAUNCHING...";
 
             try
             {
+                var launchSw = System.Diagnostics.Stopwatch.StartNew();
                 try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"), DateTime.Now.ToString("HH:mm:ss.fff") + " path=LAUNCH (restart)" + Environment.NewLine); } catch { }
                 var proc = LeagueProxy.LaunchRCS(argsArray, useConfigProxy);
+                launchSw.Stop();
+                try
+                {
+                    bool alive = false;
+                    try { alive = proc is { HasExited: false }; } catch { }
+                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") +
+                        " spawn-ms=" + launchSw.ElapsedMilliseconds +
+                        " proc-alive=" + alive + Environment.NewLine);
+                }
+                catch { }
                 if (proc == null)
                 {
                     MessageBox.Show(
@@ -184,6 +224,16 @@ namespace LeaguePatchCollection
                 }
                 // 按 Hextech 的方式：启动后等待 LCU 就绪（读取 lockfile 拿 port/password），
                 // 确认客户端真的起来，而不是“点一下没反应”。
+                // 注意：带 --launch-product 启动时客户端窗口会先躲在后台，
+                // 必须主动置前，否则看起来就像“没启动”。
+                bool shown = VanguardBypass.ShowClientWindow(60000);
+                try
+                {
+                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") + " client-window-forwarded=" + shown + Environment.NewLine);
+                }
+                catch { }
+
                 bool clientReady = await LcuProbe.WaitUntilReadyAsync(TimeSpan.FromSeconds(90));
                 Trace.WriteLine(clientReady
                     ? $"[INFO] League Client ready. dir={LcuProbe.InstallDir} port={LcuProbe.Port}"
@@ -204,7 +254,25 @@ namespace LeaguePatchCollection
 
         private void CloseClientsButton_Click(object sender, EventArgs e)
         {
+            // 顺序很关键：先把进程杀干净，version.dll 才会释放，否则删除会 Access denied
+            VanguardBypass.StopLcuPatcher();
             ProcessUtil.TerminateRiotServices();
+
+            try
+            {
+                string un = VanguardBypass.Undeploy();
+                Trace.WriteLine("[INFO] vanguard bypass teardown: " + un);
+                try
+                {
+                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") + " vanguard-teardown: " + un + Environment.NewLine);
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine("[WARN] vanguard bypass teardown failed: " + ex.Message);
+            }
         }
 
         private async void RestartUXbutton_Click(object sender, EventArgs e)
