@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -15,10 +15,17 @@ public static class RiotLocalApi
 
         if (target == ApiTarget.Lcu)
         {
-            if (!ProcessUtil.IsProcessRunning("LeagueClient"))
+            if (!ProcessUtil.IsProcessRunning("LeagueClient") && !ProcessUtil.IsProcessRunning("LeagueClientUx"))
                 return null;
 
-            lockfilePath = Path.Combine("C:\\Riot Games\\League of Legends", "lockfile");
+            // 不再写死 C:\Riot Games —— 用进程/注册表/磁盘多路探测，兼容 D 盘、WeGame 等安装位置
+            var installDir = LcuProbe.FindInstallDir();
+            if (installDir is null)
+            {
+                Trace.WriteLine(" [WARN] League of Legends install dir not found.");
+                return null;
+            }
+            lockfilePath = Path.Combine(installDir, "lockfile");
         }
         else
         {

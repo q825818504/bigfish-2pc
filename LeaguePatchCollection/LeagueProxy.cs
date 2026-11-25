@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Net;
 
@@ -112,12 +112,13 @@ public class LeagueProxy
         Trace.WriteLine("[INFO] Proxy services successfully stopped.");
     }
 
-    public static Process? LaunchRCS(IEnumerable<string>? args = null)
+    public static Process? LaunchRCS(IEnumerable<string>? args = null, bool useConfigProxy = false)
     {
-        if (_ServerCTS is null)
+        if (useConfigProxy && _ServerCTS is null)
         {
-            Trace.WriteLine("[ERROR] RCS launch failed: Proxies were not started due to an error.");
+            Trace.WriteLine("[WARN] RCS launch: config proxy was requested but proxies are not running; falling back to clean launch.");
+            useConfigProxy = false;
         }
-        return RiotClient.Launch(args);
+        return RiotClient.Launch(args, useConfigProxy);
     }
 }

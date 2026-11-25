@@ -109,18 +109,65 @@ namespace LeaguePatchCollection
             LogCleaner.ClearLogs();
         }
 
-        private void StartButton_Click(object sender, EventArgs e)
+        private async void StartButton_Click(object sender, EventArgs e)
         {
-            string args = SettingsManager.ConfigSettings.Args;
+            string args = SettingsManager.ConfigSettings.Args ?? string.Empty;
+            string[] rawArgs = args.Split(separator, StringSplitOptions.RemoveEmptyEntries);
 
-            string[] argsArray = args.Split(separator, StringSplitOptions.RemoveEmptyEntries);
+            // --config-proxy：显式启用“本地配置注入”。
+            // 只有需要用到 禁用Vanguard / 旧版荣誉 / 改名绕过 / 去臃肿 等配置补丁时才加这个开关；
+            // 默认不加，直接把 --client-config-url 交给客户端会在新版 Riot Client 上
+            // 因为 keystone 配置结构变化而启动报错（这就是旧版本“启动游戏失败”的根因）。
+            bool useConfigProxy = rawArgs.Any(a => a.Equals("--config-proxy", StringComparison.OrdinalIgnoreCase));
+            string[] argsArray = rawArgs
+                .Where(a => !a.Equals("--config-proxy", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
 
-            if (!argsArray.Contains("--allow-multiple-clients"))
+            bool alreadyRunning = RiotClient.IsRunning();
+            bool allowMultiple = argsArray.Contains("--allow-multiple-clients");
+
+            // 旧逻辑无条件 Kill 掉 RiotClientServices / LeagueClient / Lion-Win64-Shipping，
+            // 已登录的会话被拆掉后重启，经常出现“客户端报错 / 需要重新登录 / 一直转圈”。
+            // 新逻辑：客户端已在运行时直接复用（Riot Client 单实例会接管 --launch-product），
+            // 只有没在运行、且未显式要求多开时才清理残留进程。
+            if (!allowMultiple && !alreadyRunning)
             {
                 ProcessUtil.TerminateRiotServices();
             }
 
-            LeagueProxy.LaunchRCS(argsArray);
+            StartButton.Enabled = false;
+            string originalText = StartButton.Text;
+            StartButton.Text = "LAUNCHING...";
+
+            try
+            {
+                var proc = LeagueProxy.LaunchRCS(argsArray, useConfigProxy);
+                if (proc == null)
+                {
+                    MessageBox.Show(
+                        "无法启动 Riot Client。\r\n\r\n请确认已安装 Riot Client，或尝试以管理员身份运行本程序。",
+                        "League Patch Collection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // 按 Hextech 的方式：启动后等待 LCU 就绪（读取 lockfile 拿 port/password），
+                // 确认客户端真的起来，而不是“点一下没反应”。
+                bool ready = await LcuProbe.WaitUntilReadyAsync(TimeSpan.FromSeconds(90));
+                Trace.WriteLine(ready
+                    ? $"[INFO] League Client ready. dir={LcuProbe.InstallDir} port={LcuProbe.Port}"
+                    : "[WARN] League Client did not report a lockfile within 90s (still logging in?).");
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine($" [ERROR] StartButton_Click failed: {ex}");
+                MessageBox.Show("启动游戏时出错：\r\n" + ex.Message, "League Patch Collection",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            finally
+            {
+                StartButton.Text = originalText;
+                StartButton.Enabled = true;
+            }
         }
 
         private void CloseClientsButton_Click(object sender, EventArgs e)
