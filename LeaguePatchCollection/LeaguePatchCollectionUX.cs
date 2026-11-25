@@ -126,11 +126,22 @@ namespace LeaguePatchCollection
             bool alreadyRunning = RiotClient.IsRunning();
             bool allowMultiple = argsArray.Contains("--allow-multiple-clients");
 
-            // 旧逻辑无条件 Kill 掉 RiotClientServices / LeagueClient / Lion-Win64-Shipping，
-            // 已登录的会话被拆掉后重启，经常出现“客户端报错 / 需要重新登录 / 一直转圈”。
-            // 新逻辑：客户端已在运行时直接复用（Riot Client 单实例会接管 --launch-product），
-            // 只有没在运行、且未显式要求多开时才清理残留进程。
-            if (!allowMultiple && !alreadyRunning)
+            // 落盘日志：方便排查“点了 LAUNCH 到底走的是复用还是重启”
+            try
+            {
+                File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                    DateTime.Now.ToString("HH:mm:ss.fff") +
+                    " click: alreadyRunning=" + alreadyRunning +
+                    " allowMultiple=" + allowMultiple +
+                    " useConfigProxy=" + useConfigProxy +
+                    " args=[" + string.Join(" ", argsArray) + "]" + Environment.NewLine);
+            }
+            catch { }
+
+            // 按你的要求：完全复刻海克斯「启动游戏」的行为 —— 不管客户端是否在跑，
+            // 都先关掉再重新拉起（海克斯的流程就是 kill -> 重启 -> 处理配置 -> 注入）。
+            // 这里复刻 kill -> 重启 这一段，保持和海克斯一致的启动语义。
+            if (!allowMultiple)
             {
                 ProcessUtil.TerminateRiotServices();
             }
@@ -141,31 +152,7 @@ namespace LeaguePatchCollection
 
             try
             {
-                if (alreadyRunning)
-                {
-                    // 客户端已经在跑：绝对不要再启动/重启它。
-                    // 只要重新拉一次 RiotClientServices，客户端就会走一遍更新检查
-                    // （左下角变成 "Update / CHECKING SIZE..." 并弹 "Install Vanguard"），
-                    // 而 Hextech 的做法正是“只接管、不重启”，客户端才能一直保持 Play。
-                    bool ready = LcuProbe.IsClientReady();
-                    if (!ready)
-                        ready = await LcuProbe.WaitUntilReadyAsync(TimeSpan.FromSeconds(15));
-
-                    if (!ready)
-                    {
-                        MessageBox.Show(
-                            "League Client 已在运行，但还没有完成登录（找不到 lockfile）。\r\n\r\n" +
-                            "请先在客户端里登录账号，登录完成后本程序接管即可，无需重新启动客户端。",
-                            "League Patch Collection", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    return;
-                }
-
-                // 注意：这里不再改写 ClientConfiguration.json，也不再给配置文件加只读。
-                // Riot Client 的 Vanguard 开关本来就由服务器下发（本机当前就是 disabled），
-                // 人为改文件 / 锁只读只会让客户端配置损坏，反而弹出 "Install Vanguard"。
-                // 保持“只启动、不动配置”即可，VG 状态交给客户端自己判断。
-
+                try { File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"), DateTime.Now.ToString("HH:mm:ss.fff") + " path=LAUNCH (restart)" + Environment.NewLine); } catch { }
                 var proc = LeagueProxy.LaunchRCS(argsArray, useConfigProxy);
                 if (proc == null)
                 {
@@ -235,7 +222,15 @@ namespace LeaguePatchCollection
 
         private async void RemoveVgk_Click(object sender, EventArgs e)
         {
-            await ProcessUtil.RemoveVanguard();
+            // 按钮保留，卸载动作先停用（后续会重新安排它的行为）。
+            //
+            // 原实现调用 ProcessUtil.RemoveVanguard()，会删除
+            // C:\Program Files\Riot Vanguard 整个目录。一旦 vgrl.dll 没了，
+            // Riot Client 的 vanguard 依赖检查就会失败（dependency status=2），
+            // 左下角立刻从 Play 变成 Update 并弹 "Install Vanguard"。
+            // 所以这里只留占位，不执行任何文件删除。
+            await Task.CompletedTask;
+            Trace.WriteLine(" [INFO] RemoveVgk clicked: uninstall action disabled (placeholder button).");
         }
 
         private void DisableVanguard_CheckedChanged(object sender, EventArgs e)
