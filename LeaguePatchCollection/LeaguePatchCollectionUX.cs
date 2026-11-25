@@ -161,14 +161,10 @@ namespace LeaguePatchCollection
                     return;
                 }
 
-                // 复刻 Hextech 的「[+] 正在处理Vanguard反作弊」：
-                // 在客户端启动前把本地配置里的 Vanguard 开关写死为关闭，避免客户端起来后
-                // 左下角变成 "Update / CHECKING SIZE..." 并弹 "Install Vanguard"。
-                if (SettingsManager.ConfigSettings.Novgk)
-                {
-                    var patchMsg = VanguardPatcher.Apply();
-                    Trace.WriteLine("[INFO] " + patchMsg);
-                }
+                // 注意：这里不再改写 ClientConfiguration.json，也不再给配置文件加只读。
+                // Riot Client 的 Vanguard 开关本来就由服务器下发（本机当前就是 disabled），
+                // 人为改文件 / 锁只读只会让客户端配置损坏，反而弹出 "Install Vanguard"。
+                // 保持“只启动、不动配置”即可，VG 状态交给客户端自己判断。
 
                 var proc = LeagueProxy.LaunchRCS(argsArray, useConfigProxy);
                 if (proc == null)
@@ -392,6 +388,7 @@ namespace LeaguePatchCollection
                         ConfigSettings.AutoAccept,
                         ConfigSettings.Nobloatware,
                         ConfigSettings.Nobehavior,
+                        ConfigSettings.MinimalConfig,
                         ConfigSettings.Args
                     }
                 };
@@ -415,6 +412,9 @@ namespace LeaguePatchCollection
             public bool AutoAccept { get; set; } = true;
             public bool Nobloatware { get; set; } = true;
             public bool Nobehavior { get; set; } = false;
+            /// <summary>最小配置模式：只改 Vanguard 键，不把 mailbox/rms/chat 服务地址改到本地代理
+            /// （旧行为会让 Riot Client 的 UI 进程起不来）。</summary>
+            public bool MinimalConfig { get; set; } = true;
             public string Args { get; set; } = "--launch-product=league_of_legends --launch-patchline=live";
 
         }
