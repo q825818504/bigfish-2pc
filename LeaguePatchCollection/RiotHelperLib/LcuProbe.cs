@@ -24,36 +24,59 @@ public static class LcuProbe
         "LeagueClientUx", "LeagueClient", "LeagueClientUxRender"
     ];
 
+    /// <summary>读取进程主模块路径；跨架构（32 位客户端 / 64 位宿主）访问 MainModule 可能阻塞，这里限制在 800ms 内。</summary>
+    private static string? TryGetProcessPath(string processName, int timeoutMs = 800)
+    {
+        try
+        {
+            var task = Task.Run(() =>
+            {
+                foreach (var p in Process.GetProcessesByName(processName))
+                {
+                    try
+                    {
+                        var f = p.MainModule?.FileName;
+                        if (!string.IsNullOrEmpty(f))
+                            return f;
+                    }
+                    catch
+                    {
+                    }
+                }
+                return (string?)null;
+            });
+
+            if (task.Wait(timeoutMs))
+                return task.Result;
+        }
+        catch
+        {
+        }
+        return null;
+    }
+
     /// <summary>从运行中的客户端进程反推安装目录。</summary>
     public static string? FindInstallDir()
     {
         foreach (var name in ClientProcessNames)
         {
-            try
-            {
-                foreach (var p in Process.GetProcessesByName(name))
-                {
-                    try
-                    {
-                        var file = p.MainModule?.FileName;
-                        if (!string.IsNullOrEmpty(file))
-                        {
-                            var dir = Path.GetDirectoryName(file);
-                            if (!string.IsNullOrEmpty(dir) && File.Exists(Path.Combine(dir, "lockfile")))
-                                return dir;
-                            if (!string.IsNullOrEmpty(dir))
-                                return dir;
-                        }
-                    }
-                    catch
-                    {
-                        // 访问被拒绝时继续尝试其它方式
-                    }
-                }
-            }
-            catch
-            {
-            }
+            var file = TryGetProcessPath(name);
+            if (string.IsNullOrEmpty(file))
+                continue;
+
+            var dir = Path.GetDirectoryName(file);
+            if (string.IsNullOrEmpty(dir))
+                continue;
+
+            if (File.Exists(Path.Combine(dir, "lockfile")))
+                return dir;
+
+            // LeagueClientUx 可能位于子目录，向上找两级
+            var parent = Path.GetDirectoryName(dir);
+            if (!string.IsNullOrEmpty(parent) && File.Exists(Path.Combine(parent, "lockfile")))
+                return parent;
+
+            return dir;
         }
 
         // 注册表
@@ -155,6 +178,14 @@ public static class LcuProbe
     /// <summary>立即解析一次当前的 LCU 凭据，失败返回 false。</summary>
     public static bool TryResolve()
     {
+        // 先复用已缓存的目录（避免每次轮询都枚举进程/扫盘，旧实现的这条路径会卡住 UI 数十秒）
+        if (!string.IsNullOrEmpty(InstallDir) && TryReadLockfile(InstallDir!, out var cachedPort, out var cachedPwd))
+        {
+            Port = cachedPort;
+            Password = cachedPwd;
+            return true;
+        }
+
         var dir = InstallDir ?? FindInstallDir();
         if (dir is null)
             return false;
@@ -172,19 +203,25 @@ public static class LcuProbe
     public static async Task<bool> WaitUntilReadyAsync(TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
+        int attempt = 0;
         while (DateTime.UtcNow < deadline)
         {
-            if (TryResolve())
+            // 解析放在线程池里执行：MainModule 枚举在跨架构（32 位客户端 / 64 位宿主）下可能阻塞数秒
+            var resolveTask = Task.Run(() => TryResolve());
+            var finished = await Task.WhenAny(resolveTask, Task.Delay(3000)).ConfigureAwait(true);
+            bool ok = finished == resolveTask && resolveTask.Result;
+            if (ok)
             {
                 Trace.WriteLine($"[INFO] LCU ready: dir={InstallDir} port={Port}");
                 return true;
             }
 
-            // 只要客户端进程还在启动中，就继续等
+            attempt++;
+            // 客户端进程都不在，说明用户还没登录/还没起来，继续等但放慢节奏
             if (!ProcessUtil.IsProcessRunning("LeagueClientUx") &&
                 !ProcessUtil.IsProcessRunning("LeagueClient"))
             {
-                await Task.Delay(500);
+                await Task.Delay(attempt < 10 ? 250 : 800);
                 continue;
             }
 
@@ -192,5 +229,11 @@ public static class LcuProbe
         }
 
         return false;
+    }
+
+    /// <summary>客户端是否处于“已经登录、可进入游戏”的状态（LCU 有 lockfile 即视为就绪）。</summary>
+    public static bool IsClientReady()
+    {
+        return TryResolve();
     }
 }

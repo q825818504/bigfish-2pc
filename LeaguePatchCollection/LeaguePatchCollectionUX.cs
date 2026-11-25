@@ -141,6 +141,35 @@ namespace LeaguePatchCollection
 
             try
             {
+                if (alreadyRunning)
+                {
+                    // 客户端已经在跑：绝对不要再启动/重启它。
+                    // 只要重新拉一次 RiotClientServices，客户端就会走一遍更新检查
+                    // （左下角变成 "Update / CHECKING SIZE..." 并弹 "Install Vanguard"），
+                    // 而 Hextech 的做法正是“只接管、不重启”，客户端才能一直保持 Play。
+                    bool ready = LcuProbe.IsClientReady();
+                    if (!ready)
+                        ready = await LcuProbe.WaitUntilReadyAsync(TimeSpan.FromSeconds(15));
+
+                    if (!ready)
+                    {
+                        MessageBox.Show(
+                            "League Client 已在运行，但还没有完成登录（找不到 lockfile）。\r\n\r\n" +
+                            "请先在客户端里登录账号，登录完成后本程序接管即可，无需重新启动客户端。",
+                            "League Patch Collection", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    return;
+                }
+
+                // 复刻 Hextech 的「[+] 正在处理Vanguard反作弊」：
+                // 在客户端启动前把本地配置里的 Vanguard 开关写死为关闭，避免客户端起来后
+                // 左下角变成 "Update / CHECKING SIZE..." 并弹 "Install Vanguard"。
+                if (SettingsManager.ConfigSettings.Novgk)
+                {
+                    var patchMsg = VanguardPatcher.Apply();
+                    Trace.WriteLine("[INFO] " + patchMsg);
+                }
+
                 var proc = LeagueProxy.LaunchRCS(argsArray, useConfigProxy);
                 if (proc == null)
                 {
@@ -149,11 +178,10 @@ namespace LeaguePatchCollection
                         "League Patch Collection", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-
                 // 按 Hextech 的方式：启动后等待 LCU 就绪（读取 lockfile 拿 port/password），
                 // 确认客户端真的起来，而不是“点一下没反应”。
-                bool ready = await LcuProbe.WaitUntilReadyAsync(TimeSpan.FromSeconds(90));
-                Trace.WriteLine(ready
+                bool clientReady = await LcuProbe.WaitUntilReadyAsync(TimeSpan.FromSeconds(90));
+                Trace.WriteLine(clientReady
                     ? $"[INFO] League Client ready. dir={LcuProbe.InstallDir} port={LcuProbe.Port}"
                     : "[WARN] League Client did not report a lockfile within 90s (still logging in?).");
             }
