@@ -146,6 +146,27 @@ namespace LeaguePatchCollection
                 ProcessUtil.TerminateRiotServices();
             }
 
+            // 关掉产品元数据里的 vanguard 依赖并锁只读。
+            // 这是让“VG 已卸载”的机器还能保持 Play 的关键：依赖一旦是 false，
+            // 客户端就不会去碰 vgk/vgc/vgrl 那条检查链，也就不会弹 Install Vanguard。
+            // 失败不阻塞启动（比如没管理员权限时 ProgramData 写不进去）。
+            try
+            {
+                string depPatch = VanguardDependencyPatcher.Apply();
+                Trace.WriteLine("[INFO] vanguard dependency patch:\r\n" + depPatch);
+                try
+                {
+                    File.AppendAllText(Path.Combine(AppContext.BaseDirectory, "lpc.log"),
+                        DateTime.Now.ToString("HH:mm:ss.fff") + " vanguard-dependency-patch:" + Environment.NewLine +
+                        depPatch + Environment.NewLine);
+                }
+                catch { }
+            }
+            catch (Exception ex)
+            {
+                Trace.WriteLine("[WARN] vanguard dependency patch failed: " + ex.Message);
+            }
+
             StartButton.Enabled = false;
             string originalText = StartButton.Text;
             StartButton.Text = "LAUNCHING...";
