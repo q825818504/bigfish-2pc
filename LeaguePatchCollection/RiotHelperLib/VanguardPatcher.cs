@@ -90,16 +90,58 @@ public static class VanguardPatcher
             {
                 File.WriteAllText(path, text);
                 Trace.WriteLine($"[INFO] Vanguard patch applied: {changed} change(s) -> {path}");
-                return $"已处理 Vanguard 反作弊（{changed} 处修改）";
+            }
+            else
+            {
+                Trace.WriteLine("[INFO] Vanguard patch: already clean.");
             }
 
-            Trace.WriteLine("[INFO] Vanguard patch: already clean.");
-            return "Vanguard 反作弊已处于禁用状态";
+            // 关键：Riot Client 每次启动都会按 dice_roll 重新拉取配置并覆盖本文件
+            // （实测启动一次后 anticheat.vanguard.enabled 又从 false 变回 true）。
+            // 把文件设为只读，客户端的写入会失败并保留我们这份已打补丁的缓存，
+            // 客户端随即使用内存中这份“已禁用 Vanguard”的配置，左下角才会是 Play。
+            var lockMsg = LockFile(path);
+            return changed > 0
+                ? $"已处理 Vanguard 反作弊（{changed} 处修改，{lockMsg}）"
+                : $"Vanguard 反作弊已处于禁用状态（{lockMsg}）";
         }
         catch (Exception ex)
         {
             Trace.WriteLine($" [WARN] Vanguard patch failed: {ex.Message}");
             return "处理 Vanguard 失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>把配置文件设为只读，阻止客户端重新拉取时覆盖。</summary>
+    private static string LockFile(string path)
+    {
+        try
+        {
+            var attrs = File.GetAttributes(path);
+            if (!attrs.HasFlag(FileAttributes.ReadOnly))
+                File.SetAttributes(path, attrs | FileAttributes.ReadOnly);
+            return "已锁定配置";
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($" [WARN] lock failed: {ex.Message}");
+            return "锁定配置失败";
+        }
+    }
+
+    /// <summary>解除只读（需要在客户端里重新拉配置时用）。</summary>
+    public static void Unlock()
+    {
+        try
+        {
+            var path = ConfigPath;
+            if (!File.Exists(path)) return;
+            var attrs = File.GetAttributes(path);
+            if (attrs.HasFlag(FileAttributes.ReadOnly))
+                File.SetAttributes(path, attrs & ~FileAttributes.ReadOnly);
+        }
+        catch
+        {
         }
     }
 
